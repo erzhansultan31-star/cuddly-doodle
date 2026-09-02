@@ -1,6 +1,9 @@
 import os
 import io
 import logging
+import threading
+import http.server
+import socketserver
 
 from PIL import Image
 
@@ -174,7 +177,30 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(f"Кешіріңіз, қате шықты: {e}")
 
 
+def run_dummy_server():
+    """
+    Render 'Web Service' түрі HTTP порт ашылғанын күтеді. Біздің бот
+    тек Telegram polling арқылы жұмыс істейді, нақты порт ашпайды.
+    Сондықтан Render процесті "сәтсіз" деп есептеп, үнемі қайта
+    іске қосып, бірнеше бот данасын қатар жіберіп жатыр еді
+    (сол 409 Conflict қатесінің басты себебі).
+
+    Бұл функция тек Render-дің порт тексерісін қанағаттандыру үшін
+    минималды HTTP сервер ашады, ешқандай нақты жұмыс істемейді.
+    """
+    port = int(os.environ.get("PORT", 10000))
+    handler = http.server.SimpleHTTPRequestHandler
+    with socketserver.TCPServer(("0.0.0.0", port), handler) as httpd:
+        logging.getLogger(__name__).info("Dummy HTTP server %s портта ашылды", port)
+        httpd.serve_forever()
+
+
 def main():
+    # Dummy HTTP серверді бөлек thread-те іске қосамыз, ол бот polling-ке
+    # кедергі келтірмеу үшін
+    server_thread = threading.Thread(target=run_dummy_server, daemon=True)
+    server_thread.start()
+
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
