@@ -2,6 +2,8 @@ import os
 import io
 import logging
 
+from PIL import Image
+
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -22,11 +24,53 @@ logger = logging.getLogger(__name__)
 
 # ---- Баптаулар (баптауларды осында немесе .env / хостинг env vars арқылы өзгертуге болады) ----
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-PERFORMER_NAME = os.environ.get("PERFORMER_NAME", "@sharapatmuzz")
-THUMBNAIL_PATH = os.path.join(os.path.dirname(__file__), "placeholder.jpg")
+PERFORMER_NAME = os.environ.get("PERFORMER_NAME", "Сенің атың осында")
+SOURCE_IMAGE_PATH = os.path.join(os.path.dirname(__file__), "placeholder.jpg")
 
 
-def rewrite_id3_tags(audio_bytes: bytes, thumbnail_path: str, performer: str, title: str) -> bytes:
+def prepare_images(source_path: str):
+    """
+    Пайдаланушы қандай форматта (png/webp/т.б.) сурет салса да,
+    оны PIL арқылы ашып, дұрыс JPEG-ке айналдырамыз. Екі нұсқа жасаймыз:
+    - cover_bytes: ID3-ке ендіру үшін (толық өлшем)
+    - thumb_bytes: Telegram-нің thumbnail параметріне арналған,
+      max 320x320px және <200KB болуы керек (Telegram шегі)
+    """
+    img = Image.open(source_path)
+    img = img.convert("RGB")  # RGBA/CMYK/т.б. болса, JPEG-ке сай RGB-ге келтіреміз
+
+    # --- ID3 cover (толық өлшем, бірақ тым үлкен болмасын) ---
+    cover_img = img.copy()
+    cover_img.thumbnail((800, 800))
+    cover_buf = io.BytesIO()
+    cover_img.save(cover_buf, format="JPEG", quality=90)
+    cover_bytes = cover_buf.getvalue()
+
+    # --- Telegram thumbnail (Telegram шегі: max 320x320, <200KB) ---
+    thumb_img = img.copy()
+    thumb_img.thumbnail((320, 320))
+    thumb_buf = io.BytesIO()
+    quality = 85
+    thumb_img.save(thumb_buf, format="JPEG", quality=quality)
+    # 200KB-тан аспауын қамтамасыз етеміз
+    while thumb_buf.tell() > 200 * 1024 and quality > 30:
+        quality -= 10
+        thumb_buf = io.BytesIO()
+        thumb_img.save(thumb_buf, format="JPEG", quality=quality)
+    thumb_bytes = thumb_buf.getvalue()
+
+    return cover_bytes, thumb_bytes
+
+
+COVER_IMAGE_BYTES, THUMB_IMAGE_BYTES = prepare_images(SOURCE_IMAGE_PATH)
+logging.getLogger(__name__).info(
+    "Суреттер дайындалды: cover=%d байт, thumb=%d байт",
+    len(COVER_IMAGE_BYTES),
+    len(THUMB_IMAGE_BYTES),
+)
+
+
+def rewrite_id3_tags(audio_bytes: bytes, cover_bytes: bytes, performer: str, title: str) -> bytes:
     """
     MP3 файлдың ID3 тегін нақты өзгертеді:
     - ескі ендірілген мұқаба суретті (APIC) толық жояды
@@ -47,16 +91,13 @@ def rewrite_id3_tags(audio_bytes: bytes, thumbnail_path: str, performer: str, ti
     # Ескі мұқаба суреттердің бәрін жою (APIC фреймдері бірнеше болуы мүмкін)
     tags.delall("APIC")
 
-    with open(thumbnail_path, "rb") as img_file:
-        img_data = img_file.read()
-
     tags.add(
         APIC(
             encoding=3,          # UTF-8
             mime="image/jpeg",
             type=3,              # 3 = мұқаба (front cover)
             desc="Cover",
-            data=img_data,
+            data=cover_bytes,
         )
     )
 
@@ -110,7 +151,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if is_mp3:
             try:
                 # Файлдың өз ішіндегі ескі мұқабаны нақты ауыстырамыз
-                final_bytes = rewrite_id3_tags(raw_bytes, THUMBNAIL_PATH, PERFORMER_NAME, title)
+                final_bytes = rewrite_id3_tags(raw_bytes, COVER_IMAGE_BYTES, PERFORMER_NAME, title)
             except Exception:
                 logger.exception("ID3 тегін өзгерту сәтсіз болды, түпнұсқа файлмен жалғастырамыз")
                 final_bytes = raw_bytes
@@ -119,14 +160,13 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # thumbnail/performer параметрлеріне сүйенеміз
             final_bytes = raw_bytes
 
-        with open(THUMBNAIL_PATH, "rb") as thumb:
-            await message.reply_audio(
-                audio=final_bytes,
-                filename=f"{title}.mp3",
-                thumbnail=thumb,
-                performer=PERFORMER_NAME,
-                title=title,
-            )
+        await message.reply_audio(
+            audio=final_bytes,
+            filename=f"{title}.mp3",
+            thumbnail=io.BytesIO(THUMB_IMAGE_BYTES),
+            performer=PERFORMER_NAME,
+            title=title,
+        )
 
         await status_msg.delete()
     except Exception as e:
