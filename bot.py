@@ -63,9 +63,12 @@ def rewrite_id3_tags(audio_bytes: bytes, thumbnail_path: str, performer: str, ti
     tags.setall("TPE1", [TPE1(encoding=3, text=[performer])])
     tags.setall("TIT2", [TIT2(encoding=3, text=[title])])
 
-    out_buf = io.BytesIO()
-    audio.save(out_buf)
-    return out_buf.getvalue()
+    # МАҢЫЗДЫ: тегті сол баста аудио деректері бар buf-тың өзіне сақтаймыз,
+    # бос жаңа буферге емес - әйтпесе нақты аудио фреймдер жоғалып кетеді
+    # және дыбыс ойналмай қалады.
+    audio.save(buf)
+    buf.seek(0)
+    return buf.read()
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
