@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 # ---- Баптаулар (баптауларды осында немесе .env / хостинг env vars арқылы өзгертуге болады) ----
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 PERFORMER_NAME = os.environ.get("PERFORMER_NAME", "sharapatmuzz")
-THUMBNAIL_PATH = os.path.join(os.path.dirname(__file__), "placeholder.jpg")
+THUMBNAIL_PATH = os.path.join(os.path.dirname(__file__), "placeholder.png")
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
