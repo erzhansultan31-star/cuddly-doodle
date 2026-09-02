@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # ---- Баптаулар (баптауларды осында немесе .env / хостинг env vars арқылы өзгертуге болады) ----
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-PERFORMER_NAME = os.environ.get("PERFORMER_NAME", "Сенің атың осында")
+PERFORMER_NAME = os.environ.get("PERFORMER_NAME", "@sharapatmuzz")
 SOURCE_IMAGE_PATH = os.path.join(os.path.dirname(__file__), "placeholder.jpg")
 
 
