@@ -6,7 +6,7 @@ import threading
 import http.server
 import socketserver
 
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 from telegram import Update
 from telegram.ext import (
@@ -34,6 +34,10 @@ SOURCE_IMAGE_PATH = os.path.join(os.path.dirname(__file__), "placeholder.jpg")
 # Каналға автоматты жариялау үшін
 CHANNEL_ID = os.environ["CHANNEL_ID"]  # мыс. "@meningkanalym" немесе "-1001234567890"
 AUTHOR_CAPTION = os.environ.get("AUTHOR_CAPTION", "🎵 Жаңа ән")
+
+# Сурет watermark функциясы үшін
+WATERMARK_TEXT = os.environ.get("WATERMARK_TEXT", "@sharapatmuzz")
+FONT_PATH = os.path.join(os.path.dirname(__file__), "font.ttf")
 
 
 def prepare_images(source_path: str):
@@ -148,11 +152,53 @@ def sanitize_title(raw_title: str, fallback: str = "Атаусыз ән") -> str
     return raw_title.strip()
 
 
+def add_watermark(image_bytes: bytes, text: str = WATERMARK_TEXT) -> bytes:
+    """
+    Суретке астыңғы жағына, ортасына, орташа өлшемде әрі күңгірт
+    (жартылай мөлдір) watermark мәтінін қосады. Тым ашық/қатты болмауы
+    үшін альфа мәні төмен ұсталады, әрі оқылуы үшін жеңіл көлеңке
+    қосылады.
+    """
+    base = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+
+    # Watermark қабатын бөлек жасаймыз (мөлдір фонмен), содан кейін
+    # негізгі суретпен біріктіреміз
+    txt_layer = Image.new("RGBA", base.size, (255, 255, 255, 0))
+    draw = ImageDraw.Draw(txt_layer)
+
+    # Шрифт өлшемі суреттің енінен пропорционалды түрде есептеледі
+    font_size = max(18, base.width // 16)
+    try:
+        font = ImageFont.truetype(FONT_PATH, font_size)
+    except Exception:
+        font = ImageFont.load_default()
+
+    bbox = draw.textbbox((0, 0), text, font=font)
+    text_w = bbox[2] - bbox[0]
+    text_h = bbox[3] - bbox[1]
+
+    x = (base.width - text_w) / 2
+    y = base.height - text_h - base.height * 0.06  # астыңғы жиектен шамамен 6% қашықтықта
+
+    ALPHA = 110  # 0-255: төмен мән = күңгірттеу, көзге тым бадырайып тұрмайды
+
+    # Оқылуын жақсарту үшін жұқа көлеңке, содан кейін негізгі мәтін
+    draw.text((x + 2, y + 2), text, font=font, fill=(0, 0, 0, int(ALPHA * 0.7)))
+    draw.text((x, y), text, font=font, fill=(255, 255, 255, ALPHA))
+
+    combined = Image.alpha_composite(base, txt_layer).convert("RGB")
+
+    out_buf = io.BytesIO()
+    combined.save(out_buf, format="JPEG", quality=92)
+    return out_buf.getvalue()
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Сәлем! Маған кез келген аудио файл (mp3, voice, т.б.) жібер — "
-        "мен саған мұқаба фото мен әнші атын өзгертіп қайтарамын, "
-        "әрі ол автоматты түрде каналға да жарияланады. 🎵"
+        "Сәлем! Маған мыналарды жібере аласың:\n\n"
+        "🎵 Аудио файл - мұқаба фото мен әнші атын өзгертіп қайтарамын\n"
+        "🖼 Сурет - watermark қойып қайтарамын\n\n"
+        "Екеуі де автоматты түрде каналға жарияланады."
     )
 
 
@@ -227,6 +273,40 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(f"Кешіріңіз, қате шықты: {e}")
 
 
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+
+    # Ең үлкен өлшемдегі суретті аламыз (Telegram бір суреттің бірнеше
+    # өлшемдегі нұсқасын жібереді)
+    photo = message.photo[-1]
+
+    status_msg = await message.reply_text("Суретті өңдеп жатырмын...")
+
+    try:
+        tg_file = await photo.get_file()
+        raw_bytes = bytes(await tg_file.download_as_bytearray())
+
+        watermarked_bytes = add_watermark(raw_bytes, WATERMARK_TEXT)
+
+        await message.reply_photo(photo=watermarked_bytes)
+        await status_msg.delete()
+
+        # --- Каналға автоматты жариялау ---
+        try:
+            await context.bot.send_photo(
+                chat_id=CHANNEL_ID,
+                photo=watermarked_bytes,
+                caption=AUTHOR_CAPTION,
+            )
+        except Exception:
+            logger.exception(
+                "Суретті каналға жариялау сәтсіз болды - бот каналда админ екенін тексеріңіз"
+            )
+    except Exception as e:
+        logger.exception("Суретті өңдеу кезінде қате шықты")
+        await status_msg.edit_text(f"Кешіріңіз, қате шықты: {e}")
+
+
 def run_dummy_server():
     """
     Render 'Web Service' түрі HTTP порт ашылғанын күтеді. Біздің бот
@@ -260,6 +340,7 @@ def main():
             handle_audio,
         )
     )
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
     logger.info("Бот іске қосылды...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
