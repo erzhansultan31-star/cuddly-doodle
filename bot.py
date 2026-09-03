@@ -1,10 +1,10 @@
 import os
 import io
+import re
 import logging
 import threading
 import http.server
 import socketserver
-from datetime import datetime, timezone, timedelta
 
 from PIL import Image
 
@@ -34,7 +34,6 @@ SOURCE_IMAGE_PATH = os.path.join(os.path.dirname(__file__), "placeholder.jpg")
 # Каналға автоматты жариялау үшін
 CHANNEL_ID = os.environ["CHANNEL_ID"]  # мыс. "@meningkanalym" немесе "-1001234567890"
 AUTHOR_CAPTION = os.environ.get("AUTHOR_CAPTION", "🎵 Жаңа ән")
-KZ_TZ = timezone(timedelta(hours=5))  # Қазақстан уақыты (Астана/Алматы, UTC+5)
 
 
 def prepare_images(source_path: str):
@@ -121,6 +120,34 @@ def rewrite_id3_tags(audio_bytes: bytes, cover_bytes: bytes, performer: str, tit
     return buf.read()
 
 
+DATE_LIKE_PATTERN = re.compile(
+    r"""
+    \d{1,2}[./-]\d{1,2}[./-]\d{2,4}   # 03.09.2026, 03/09/2026, 03-09-2026
+    |
+    \d{4}-\d{1,2}-\d{1,2}             # 2026-09-03
+    |
+    \d{1,2}:\d{2}(:\d{2})?            # 11:54, 11:54:30
+    """,
+    re.VERBOSE,
+)
+
+
+def sanitize_title(raw_title: str, fallback: str = "Атаусыз ән") -> str:
+    """
+    Кейбір аудио файлдардың ID3 title тегіне (жүктеп алған кезде) қате
+    түрде дата/уақыт жазылып қалуы мүмкін (мыс. "03.09.2026 11:54").
+    Бұл функция сондай жағдайды анықтап, орнына бейтарап атау қояды -
+    әйтпесе сол дата тікелей трек атауы ретінде каналда көрінеді.
+    """
+    if not raw_title or not raw_title.strip():
+        return fallback
+
+    if DATE_LIKE_PATTERN.search(raw_title):
+        return fallback
+
+    return raw_title.strip()
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Сәлем! Маған кез келген аудио файл (mp3, voice, т.б.) жібер — "
@@ -147,7 +174,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    title = getattr(audio_obj, "title", None) or "Атаусыз ән"
+    title = sanitize_title(getattr(audio_obj, "title", None))
 
     status_msg = await message.reply_text("Өңдеп жатырмын, күте тұрыңыз...")
 
@@ -182,9 +209,6 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # --- Каналға автоматты жариялау ---
         try:
-            date_str = datetime.now(KZ_TZ).strftime("%d.%m.%Y %H:%M")
-            caption = f"{AUTHOR_CAPTION}\n\n📅 {date_str}"
-
             await context.bot.send_audio(
                 chat_id=CHANNEL_ID,
                 audio=final_bytes,
@@ -192,7 +216,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 thumbnail=io.BytesIO(THUMB_IMAGE_BYTES),
                 performer=PERFORMER_NAME,
                 title=title,
-                caption=caption,
+                caption=AUTHOR_CAPTION,
             )
         except Exception:
             logger.exception(
