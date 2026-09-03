@@ -4,6 +4,7 @@ import logging
 import threading
 import http.server
 import socketserver
+from datetime import datetime, timezone, timedelta
 
 from PIL import Image
 
@@ -27,8 +28,13 @@ logger = logging.getLogger(__name__)
 
 # ---- Баптаулар (баптауларды осында немесе .env / хостинг env vars арқылы өзгертуге болады) ----
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-PERFORMER_NAME = os.environ.get("PERFORMER_NAME", "@sharapatmuzz")
+PERFORMER_NAME = os.environ.get("PERFORMER_NAME", "Сенің атың осында")
 SOURCE_IMAGE_PATH = os.path.join(os.path.dirname(__file__), "placeholder.jpg")
+
+# Каналға автоматты жариялау үшін
+CHANNEL_ID = os.environ["CHANNEL_ID"]  # мыс. "@meningkanalym" немесе "-1001234567890"
+AUTHOR_CAPTION = os.environ.get("AUTHOR_CAPTION", "🎵 Жаңа ән")
+KZ_TZ = timezone(timedelta(hours=5))  # Қазақстан уақыты (Астана/Алматы, UTC+5)
 
 
 def prepare_images(source_path: str):
@@ -118,7 +124,8 @@ def rewrite_id3_tags(audio_bytes: bytes, cover_bytes: bytes, performer: str, tit
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Сәлем! Маған кез келген аудио файл (mp3, voice, т.б.) жібер — "
-        "мен саған мұқаба фото мен әнші атын өзгертіп қайтарамын."
+        "мен саған мұқаба фото мен әнші атын өзгертіп қайтарамын, "
+        "әрі ол автоматты түрде каналға да жарияланады. 🎵"
     )
 
 
@@ -172,6 +179,25 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         await status_msg.delete()
+
+        # --- Каналға автоматты жариялау ---
+        try:
+            date_str = datetime.now(KZ_TZ).strftime("%d.%m.%Y %H:%M")
+            caption = f"{AUTHOR_CAPTION}\n\n📅 {date_str}"
+
+            await context.bot.send_audio(
+                chat_id=CHANNEL_ID,
+                audio=final_bytes,
+                filename=f"{title}.mp3",
+                thumbnail=io.BytesIO(THUMB_IMAGE_BYTES),
+                performer=PERFORMER_NAME,
+                title=title,
+                caption=caption,
+            )
+        except Exception:
+            logger.exception(
+                "Каналға жариялау сәтсіз болды - бот каналда админ екенін тексеріңіз"
+            )
     except Exception as e:
         logger.exception("Аудионы өңдеу кезінде қате шықты")
         await status_msg.edit_text(f"Кешіріңіз, қате шықты: {e}")
